@@ -60,25 +60,10 @@ jobs:
           # Store executable name as environment variable for subsequent steps
           echo "EXECUTABLE_NAME=$EXECUTABLE_NAME" >> $GITHUB_ENV
 
-      - name: Create Source Archive
-        run: |
-          # Get the version from the environment variable
-          VERSION="${{ env.RELEASE_VERSION }}"
-          # Define the base name for the source archive
-          SOURCE_ARCHIVE_BASE_NAME="ssync_source" # Change this for source archive base name
-          # Construct the archive name (e.g., my_go_app_source_v1.0.0.zip)
-          SOURCE_ARCHIVE_NAME="${SOURCE_ARCHIVE_BASE_NAME}_${VERSION}.zip"
-
-          # Create a zip archive of the current repository state
-          # 'HEAD' refers to the current commit.
-          git archive --format=zip --output "${SOURCE_ARCHIVE_NAME}" HEAD
-
-          # Store source archive name as environment variable for subsequent steps
-          echo "SOURCE_ARCHIVE_NAME=$SOURCE_ARCHIVE_NAME" >> $GITHUB_ENV
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/heads/main') # Release only for main branch pushes
+        # Release only for main branch pushes
+        if: startsWith(github.ref, 'refs/heads/main')
         with:
           # Use the extracted version as the release tag. Creates a Git tag if it doesn't exist.
           tag_name: ${{ env.RELEASE_VERSION }}
@@ -86,10 +71,8 @@ jobs:
           name: Release ${{ env.RELEASE_VERSION }}
           # Automatically generate release notes from commits since the last tag
           generate_release_notes: true
-          # Attach both the built executable and the source archive as assets
           files: |
             ${{ env.EXECUTABLE_NAME }}
-            ${{ env.SOURCE_ARCHIVE_NAME }}
         env:
           # GITHUB_TOKEN is automatically provided by GitHub Actions for authentication
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
