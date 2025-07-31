@@ -1,0 +1,91 @@
+# Workflow name
+name: Build and release
+
+# Trigger the workflow on pushes to the main branch
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24" # Specify Go version
+
+      - name: Extract Version and Build Go Windows Executable
+        run: |
+          # Get the latest commit message
+          COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+          echo "Latest commit message: $COMMIT_MESSAGE"
+
+          # Try to extract a version string (e.g., v1.2.3, v1.0.0-beta)
+          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP 'v\d+\.\d+\.\d+(-[a-zA-Z0-9\.]+)?' | head -n 1)
+
+          # If no version found, terminate the workflow
+          if [ -z "$VERSION" ]; then
+            echo "::error::No explicit version (e.g., vX.Y.Z) found in the latest commit message. Workflow will terminate."
+            exit 1 # Terminate workflow with non-zero status
+          fi
+
+          echo "Detected version for release: $VERSION"
+          # Set extracted version as environment variable for subsequent steps
+          echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
+
+          # Define the base application name
+          APP_BASE_NAME="ssync" # Change this to your desired base name
+
+          # Construct the executable name (e.g., my_go_app_v1.0.0.exe)
+          EXECUTABLE_NAME="${APP_BASE_NAME}_${VERSION}.exe"
+
+          # Set environment variables for Windows cross-compilation
+          export GOOS=windows
+          export GOARCH=amd64
+
+          # Build the executable
+          # Adjust path if main package is not in the root, e.g., 'go build -o "${EXECUTABLE_NAME}" ./cmd/your_app'
+          go build -o "${EXECUTABLE_NAME}" .
+
+          # Store executable name as environment variable for subsequent steps
+          echo "EXECUTABLE_NAME=$EXECUTABLE_NAME" >> $GITHUB_ENV
+
+      - name: Create Source Archive
+        run: |
+          # Get the version from the environment variable
+          VERSION="${{ env.RELEASE_VERSION }}"
+          # Define the base name for the source archive
+          SOURCE_ARCHIVE_BASE_NAME="ssync_source" # Change this for source archive base name
+          # Construct the archive name (e.g., my_go_app_source_v1.0.0.zip)
+          SOURCE_ARCHIVE_NAME="${SOURCE_ARCHIVE_BASE_NAME}_${VERSION}.zip"
+
+          # Create a zip archive of the current repository state
+          # 'HEAD' refers to the current commit.
+          git archive --format=zip --output "${SOURCE_ARCHIVE_NAME}" HEAD
+
+          # Store source archive name as environment variable for subsequent steps
+          echo "SOURCE_ARCHIVE_NAME=$SOURCE_ARCHIVE_NAME" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/heads/main') # Release only for main branch pushes
+        with:
+          # Use the extracted version as the release tag. Creates a Git tag if it doesn't exist.
+          tag_name: ${{ env.RELEASE_VERSION }}
+          # Use the extracted version as the release name
+          name: Release ${{ env.RELEASE_VERSION }}
+          # Automatically generate release notes from commits since the last tag
+          generate_release_notes: true
+          # Attach both the built executable and the source archive as assets
+          files: |
+            ${{ env.EXECUTABLE_NAME }}
+            ${{ env.SOURCE_ARCHIVE_NAME }}
+        env:
+          # GITHUB_TOKEN is automatically provided by GitHub Actions for authentication
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
