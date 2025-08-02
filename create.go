@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/manifoldco/promptui"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 type filepathWalkData struct {
 	Path         string
-	RelativePath string
+	RelativePath string // normalized to use "/" as the path separator
 	Info         os.FileInfo
 }
 
@@ -31,20 +31,7 @@ func runCreate(cmd *cobra.Command, args []string) {
 	directoryPath := args[0]
 	manifestPath := args[1]
 
-	fmt.Printf("Executing 'create' command with directory: '%s', manifest: '%s'\n", directoryPath, manifestPath)
-
-	// Check if manifestPath already exists
-	if _, err := os.Stat(manifestPath); err == nil {
-		// If it exists, prompt the user for confirmation to overwrite.
-		prompt := promptui.Prompt{
-			Label:     "Manifest file already exists. Overwrite?",
-			IsConfirm: true,
-		}
-		if _, err := prompt.Run(); err != nil {
-			fmt.Println("Operation cancelled.")
-			return
-		}
-	}
+	logrus.Debugf("Executing 'create' command with directory: '%s', manifest: '%s'", directoryPath, manifestPath)
 
 	file, err := createFile(manifestPath)
 	if err != nil {
@@ -53,17 +40,20 @@ func runCreate(cmd *cobra.Command, args []string) {
 	}
 	defer file.Close()
 
-	// Create a channel to receive walked file paths.
+	// Channels for communication between goroutines.
 	filepathWalkDataChan := make(chan filepathWalkData, runtime.NumCPU())
 	fileInfoChan := make(chan FileInfo)
 
-	var wg sync.WaitGroup // WaitGroup to synchronize worker goroutines.
+	// WaitGroup to synchronize goroutines.
+	var wg sync.WaitGroup
+	var wg2 sync.WaitGroup
 
-	// Launch worker goroutines.
+	// [Goroutine] Worker goroutines to process file paths.
 	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1) // Increment counter for each worker.
+		wg.Add(1)
 		go func() {
-			defer wg.Done() // Decrement counter when worker exits.
+			defer wg.Done()
+
 			for data := range filepathWalkDataChan {
 				// Process the file.
 				path := data.Path
@@ -87,12 +77,11 @@ func runCreate(cmd *cobra.Command, args []string) {
 
 	fileInfoSlice := make([]FileInfo, 0)
 
-	var wg2 sync.WaitGroup
-
-	wg2.Add(1) // Increment counter for the goroutine collecting file info.
-	// This goroutine collects file info.
+	wg2.Add(1)
+	// [Goroutine] This goroutine collects file info.
 	go func() {
 		defer wg2.Done()
+
 		for fileInfo := range fileInfoChan {
 			fileInfoSlice = append(fileInfoSlice, fileInfo)
 		}
@@ -100,41 +89,39 @@ func runCreate(cmd *cobra.Command, args []string) {
 
 	// Traverse the directory and send file paths to the channel.
 	err = filepath.Walk(directoryPath, func(path string, info os.FileInfo, err error) error {
-		// if err != nil {
-		// 	return fmt.Errorf("error accessing path %q: %v", path, err)
-		// }
+		if err != nil {
+			fmt.Printf("Error accessing path %q: %v\n", path, err)
+			return nil
+		}
+
+		if info.IsDir() {
+			// Skip directories.
+			return nil
+		}
 
 		relativePath, err := filepath.Rel(directoryPath, path) // Make the path relative to the directory.
 		relativePath = filepath.ToSlash(relativePath)          // Convert to forward slashes for consistency.
 		if err != nil {
-			return fmt.Errorf("error accessing path %q: %v", path, err)
+			fmt.Printf("Error processing file %q: %v\n", path, err)
+			return nil
 		}
-		if info.IsDir() {
-			// fmt.Printf("Directory: %s\n", path)
-		} else {
-			// fmt.Printf("File: %s\n", path)
-			filepathWalkDataChan <- filepathWalkData{Path: path, RelativePath: relativePath, Info: info}
-		}
+
+		fmt.Printf("Processing file: %s\n", path)
+		filepathWalkDataChan <- filepathWalkData{Path: path, RelativePath: relativePath, Info: info}
 		return nil
 	})
 
-	// Close the channel after all paths have been sent.
-	// This signals to worker goroutines that no more data will be sent.
+	// Notify the goroutines to stop and wait for them to finish.
 	close(filepathWalkDataChan)
-
-	// Wait for all worker goroutines to finish processing.
 	wg.Wait()
-
-	close(fileInfoChan) // Close the fileInfoChan to signal no more data will be sent.
-
-	wg2.Wait() // Wait for the goroutine collecting file info to finish.
+	close(fileInfoChan)
+	wg2.Wait()
 
 	if err != nil {
 		fmt.Printf("Error traversing directory: %v\n", err)
-		return
+	} else {
+		fmt.Println("All files processed successfully.")
 	}
-
-	fmt.Println("All files processed successfully.")
 
 	// Sort fileInfoSlice by Path field
 	sort.Slice(fileInfoSlice, func(i, j int) bool {
