@@ -54,7 +54,7 @@ func runCreate(cmd *cobra.Command, args []string) {
 	defer file.Close()
 
 	// Create a channel to receive walked file paths.
-	filepathWalkDataChan := make(chan filepathWalkData)
+	filepathWalkDataChan := make(chan filepathWalkData, runtime.NumCPU())
 	fileInfoChan := make(chan FileInfo)
 
 	var wg sync.WaitGroup // WaitGroup to synchronize worker goroutines.
@@ -87,8 +87,12 @@ func runCreate(cmd *cobra.Command, args []string) {
 
 	fileInfoSlice := make([]FileInfo, 0)
 
+	var wg2 sync.WaitGroup
+
+	wg2.Add(1) // Increment counter for the goroutine collecting file info.
+	// This goroutine collects file info.
 	go func() {
-		// This goroutine collects file info.
+		defer wg2.Done()
 		for fileInfo := range fileInfoChan {
 			fileInfoSlice = append(fileInfoSlice, fileInfo)
 		}
@@ -122,6 +126,8 @@ func runCreate(cmd *cobra.Command, args []string) {
 	wg.Wait()
 
 	close(fileInfoChan) // Close the fileInfoChan to signal no more data will be sent.
+
+	wg2.Wait() // Wait for the goroutine collecting file info to finish.
 
 	if err != nil {
 		fmt.Printf("Error traversing directory: %v\n", err)
