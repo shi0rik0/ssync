@@ -2,43 +2,33 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
-	"runtime"
 	"sort"
-	"sync"
 
-	"github.com/manifoldco/promptui"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
+// runUpdate updates an existing manifest file by traversing a directory.
 func runUpdate(cmd *cobra.Command, args []string) {
-	quickFlag, err := cmd.Flags().GetBool("quick")
-	if err != nil {
-		fmt.Printf("Error retrieving quick flag: %v\n", err)
-		return
-	}
-
 	// Extract arguments.
 	directoryPath := args[0]
 	oldManifestPath := args[1]
 	newManifestPath := args[2]
 	logrus.Debugf("Executing 'update' command with directory: '%s', old manifest: '%s', new manifest: '%s'", directoryPath, oldManifestPath, newManifestPath)
 
-	// Check if newManifestPath already exists
-	if _, err := os.Stat(newManifestPath); err == nil {
-		// If it exists, prompt the user for confirmation to overwrite.
-		prompt := promptui.Prompt{
-			Label:     "Manifest file already exists. Overwrite?",
-			IsConfirm: true,
-		}
-		if _, err := prompt.Run(); err != nil {
-			fmt.Println("Operation cancelled.")
-			return
-		}
+	isNTFS, err := isNTFS(directoryPath)
+	if err != nil {
+		fmt.Printf("Error checking file system type: %v\n", err)
+		return
+	}
+	if !isNTFS {
+		fmt.Printf("The directory is not on an NTFS file system. NTFS file IDs will not be available.\n")
+		return
 	}
 
+	// Create the new manifest file.
 	file, err := createFile(newManifestPath)
 	if err != nil {
 		fmt.Printf("Error creating new manifest file: %v\n", err)
@@ -48,139 +38,110 @@ func runUpdate(cmd *cobra.Command, args []string) {
 
 	oldManifestSlice, err := readManifest(oldManifestPath)
 	if err != nil {
-		fmt.Printf("Error reading manifest: %v\n", err)
+		fmt.Printf("Error reading old manifest: %v\n", err)
 		return
 	}
 
-	oldManifestMap := make(map[string]FileInfo)
+	oldManifestMapByPath := make(map[string]FileInfo)
+	oldManifestMapByFileID := make(map[uint64]FileInfo)
 	for _, fileInfo := range oldManifestSlice {
-		oldManifestMap[fileInfo.Path] = fileInfo
+		oldManifestMapByPath[fileInfo.Path] = fileInfo
+		oldManifestMapByFileID[fileInfo.NTFSFileID] = fileInfo
 	}
 
 	newManifestSlice := make([]FileInfo, 0)
 
-	filepathWalkDataChan := make(chan filepathWalkData)
-	fileInfoChan := make(chan FileInfo)
-	var wg sync.WaitGroup // WaitGroup to synchronize worker goroutines.
-
-	// Launch worker goroutines.
-	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1) // Increment counter for each worker.
-		go func() {
-			defer wg.Done() // Decrement counter when worker exits.
-
-			for data := range filepathWalkDataChan {
-				logrus.Debugf("Processing file: %s", data.Path)
-				// Process the file.
-				path := data.Path
-				relativePath := data.RelativePath
-				modifiedTime := data.Info.ModTime()
-				size := data.Info.Size()
-
-				fileInfo, exists := oldManifestMap[relativePath]
-				if !exists {
-					hash, err := calculateMD5(path)
-					if err != nil {
-						panic(fmt.Sprintf("Error calculating MD5 for file %s: %v", path, err))
-					}
-					fileInfo = FileInfo{
-						Path:         relativePath,
-						ModifiedTime: modifiedTime,
-						Size:         size,
-						Hash:         hash,
-					}
-					fileInfoChan <- fileInfo
-					continue
-				}
-
-				if quickFlag {
-					// In quick mode, only check mtime and size.
-					if modifiedTime.Unix() != fileInfo.ModifiedTime.Unix() || size != fileInfo.Size {
-						hash, err := calculateMD5(path)
-						if err != nil {
-							panic(fmt.Sprintf("Error calculating MD5 for file %s: %v", path, err))
-						}
-						fileInfo = FileInfo{
-							Path:         relativePath,
-							ModifiedTime: modifiedTime,
-							Size:         size,
-							Hash:         hash,
-						}
-						fileInfoChan <- fileInfo
-					} else {
-						// If the file hasn't changed, use the old manifest entry.
-						fileInfo = FileInfo{
-							Path:         relativePath,
-							ModifiedTime: modifiedTime,
-							Size:         size,
-							Hash:         fileInfo.Hash,
-						}
-						fileInfoChan <- fileInfo
-					}
-				} else {
-					hash, err := calculateMD5(path)
-					if err != nil {
-						panic(fmt.Sprintf("Error calculating MD5 for file %s: %v", path, err))
-					}
-					fileInfo = FileInfo{
-						Path:         relativePath,
-						ModifiedTime: modifiedTime,
-						Size:         size,
-						Hash:         hash,
-					}
-					fileInfoChan <- fileInfo
-				}
-			}
-		}()
-	}
-
-	go func() {
-		// This goroutine collects file info.
-		for fileInfo := range fileInfoChan {
-			newManifestSlice = append(newManifestSlice, fileInfo)
-		}
-	}()
-
-	// Traverse the directory and send file paths to the channel.
-	err = filepath.Walk(directoryPath, func(path string, info os.FileInfo, err error) error {
-		// if err != nil {
-		// 	return fmt.Errorf("error accessing path %q: %v", path, err)
-		// }
-
-		relativePath, err := filepath.Rel(directoryPath, path) // Make the path relative to the directory.
-		relativePath = filepath.ToSlash(relativePath)          // Convert to forward slashes for consistency.
+	err = filepath.WalkDir(directoryPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return fmt.Errorf("error accessing path %q: %v", path, err)
+			// Log error but continue walking the directory.
+			fmt.Printf("Error accessing path %q: %v\n", path, err)
+			return nil
 		}
-		if info.IsDir() {
-			// fmt.Printf("Directory: %s\n", path)
+
+		if d.IsDir() {
+			// Skip directories.
+			return nil
+		}
+
+		// Get os.FileInfo from fs.DirEntry to access ModTime and Size.
+		info, err := d.Info()
+		if err != nil {
+			// Log error but continue walking if file info cannot be retrieved.
+			fmt.Printf("Error getting file info for %q: %v\n", path, err)
+			return nil
+		}
+
+		// Make the path relative to the base directory and normalize slashes.
+		relativePath, err := filepath.Rel(directoryPath, path)
+		if err != nil {
+			// Log error but continue walking.
+			fmt.Printf("Error processing relative path for %q: %v\n", path, err)
+			return nil
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		logrus.Debugf("Processing file: %s", path)
+
+		// Get current file's modification time and size.
+		modifiedTime := info.ModTime()
+		size := info.Size()
+		var currentHash string
+
+		fileID, err := getNTFSFileID(path)
+		if err != nil {
+			panic(fmt.Sprintf("Error getting NTFS file ID for file %s: %v", path, err))
+		}
+
+		var fileInfo FileInfo
+		oldFileInfo1, exists := oldManifestMapByPath[relativePath]
+		// condition1: The file is unchanged and unmoved.
+		condition1 := exists && modifiedTime.Unix() == oldFileInfo1.ModifiedTime.Unix() && size == oldFileInfo1.Size
+		oldFileInfo2, exists := oldManifestMapByFileID[fileID]
+		// condition2: The file is unchanged but moved.
+		condition2 := exists && modifiedTime.Unix() == oldFileInfo2.ModifiedTime.Unix() && size == oldFileInfo2.Size
+		if condition1 {
+			fileInfo = oldFileInfo1
+		} else if condition2 {
+			fileInfo = oldFileInfo2
+			fileInfo.Path = relativePath // Update path to the new relative path.
 		} else {
-			// fmt.Printf("File: %s\n", path)
-			filepathWalkDataChan <- filepathWalkData{Path: path, RelativePath: relativePath, Info: info}
+			// File is new, calculate its MD5 hash.
+			hash, err := calculateMD5(path)
+			if err != nil {
+				panic(fmt.Sprintf("Error calculating MD5 for new file %s: %v", path, err))
+			}
+			currentHash = hash
+			fileInfo = FileInfo{
+				Path:         relativePath,
+				ModifiedTime: modifiedTime,
+				Size:         size,
+				Hash:         currentHash,
+				NTFSFileID:   fileID,
+			}
 		}
+
+		newManifestSlice = append(newManifestSlice, fileInfo)
+
 		return nil
 	})
 
-	// Close the channel after all paths have been sent.
-	// This signals to worker goroutines that no more data will be sent.
-	close(filepathWalkDataChan)
-
-	wg.Wait()
-
-	close(fileInfoChan)
-
 	if err != nil {
 		fmt.Printf("Error traversing directory: %v\n", err)
-		return
+		return // Exit if directory traversal failed.
 	}
 
+	fmt.Println("All files processed successfully.")
+
+	// Sort the new manifest slice by Path for consistent manifest generation.
 	sort.Slice(newManifestSlice, func(i, j int) bool {
 		return newManifestSlice[i].Path < newManifestSlice[j].Path
 	})
 
-	err = writeManifest(file, newManifestSlice)
+	// Write the collected file information to the new manifest file.
+	err = writeManifest(file, newManifestSlice) // Assumes writeManifest is defined elsewhere.
 	if err != nil {
 		fmt.Printf("Error writing new manifest file: %v\n", err)
 		return
 	}
+
+	fmt.Printf("New manifest written to %s\n", newManifestPath)
 }

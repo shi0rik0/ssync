@@ -11,47 +11,39 @@ import (
 )
 
 func execute() {
-	// rootCmd represents the base command when called without any subcommands.
-	// It is defined here to avoid being a global variable.
 	var rootCmd = &cobra.Command{
 		Use:   "ssync",
-		Short: "A simple synchronization utility.",
-		Long:  `ssync is a command-line tool for managing synchronization tasks.`,
+		Short: "A simple file synchronization utility.",
+		Long:  `ssync is a command-line tool for synchronizing files.`,
 	}
 
-	// createCmd defines the 'create' subcommand.
+	// Create subcommands.
 	var createCmd = &cobra.Command{
 		Use:   "create <directory> <manifest>",
 		Short: "Generates a manifest file for a directory.",
-		Args:  cobra.ExactArgs(2), // Enforces exactly 2 arguments.
+		Args:  cobra.ExactArgs(2),
 		Run:   runCreate,
 	}
 
-	// updateCmd defines the 'update' subcommand.
 	var updateCmd = &cobra.Command{
 		Use:   "update <directory> <old-manifest> <new-manifest>",
 		Short: "Updates a manifest file.",
-		Args:  cobra.ExactArgs(3), // Enforces exactly 3 arguments.
+		Args:  cobra.ExactArgs(3),
 		Run:   runUpdate,
 	}
 
-	// verifyCmd defines the 'verify' subcommand.
-	var verifyCmd = &cobra.Command{
-		Use:   "verify <directory> <manifest>",
-		Short: "Verifies the integrity of a manifest file against a directory.",
-		Args:  cobra.ExactArgs(2), // Enforces exactly 2 arguments.
-		Run:   runVerify,
+	var compareCmd = &cobra.Command{
+		Use:   "compare <directory1> <directory2>",
+		Short: "Compares two directories and outputs differences.",
+		Args:  cobra.ExactArgs(2),
+		Run:   runCompare,
 	}
+	compareCmd.Flags().BoolVarP(new(bool), "strict", "s", false, "Perform a strict comparison.")
 
 	// Add subcommands to the root command.
 	rootCmd.AddCommand(createCmd)
 	rootCmd.AddCommand(updateCmd)
-	rootCmd.AddCommand(verifyCmd)
-
-	// Add flags to the respective commands.
-	// The flag variables are not needed globally as their values are accessed via cmd.Flags().GetBool().
-	updateCmd.Flags().BoolVarP(new(bool), "quick", "q", false, "Perform a quick update without extensive checks.")
-	verifyCmd.Flags().BoolVarP(new(bool), "quick", "q", false, "Perform a quick verification without extensive checks.")
+	rootCmd.AddCommand(compareCmd)
 
 	// Execute the root command.
 	if err := rootCmd.Execute(); err != nil {
@@ -61,6 +53,7 @@ func execute() {
 }
 
 func main() {
+	// Set up logrus logging.
 	logLevel := strings.ToLower(os.Getenv("LOG"))
 	if logLevel != "" {
 		fmt.Printf("You have set the log level to '%s'\n", logLevel)

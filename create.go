@@ -2,29 +2,14 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
-
-type filepathWalkData struct {
-	Path         string
-	RelativePath string // normalized to use "/" as the path separator
-	Info         os.FileInfo
-}
-
-type FileInfo struct {
-	Path         string
-	ModifiedTime time.Time
-	Size         int64
-	Hash         string
-}
 
 func runCreate(cmd *cobra.Command, args []string) {
 	// Extract arguments.
@@ -33,6 +18,17 @@ func runCreate(cmd *cobra.Command, args []string) {
 
 	logrus.Debugf("Executing 'create' command with directory: '%s', manifest: '%s'", directoryPath, manifestPath)
 
+	isNTFS, err := isNTFS(directoryPath)
+	if err != nil {
+		fmt.Printf("Error checking file system type: %v\n", err)
+		return
+	}
+	if !isNTFS {
+		fmt.Printf("The directory is not on an NTFS file system. NTFS file IDs will not be available.\n")
+		return
+	}
+
+	// Create the manifest file.
 	file, err := createFile(manifestPath)
 	if err != nil {
 		fmt.Printf("Error creating manifest file: %v\n", err)
@@ -40,95 +36,106 @@ func runCreate(cmd *cobra.Command, args []string) {
 	}
 	defer file.Close()
 
-	// Channels for communication between goroutines.
-	filepathWalkDataChan := make(chan filepathWalkData, runtime.NumCPU())
-	fileInfoChan := make(chan FileInfo)
+	totalFileSize := int64(0)
+	// Traverse the directory to get the total file size.
+	_ = filepath.WalkDir(directoryPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		totalFileSize += info.Size()
+		return nil
+	})
 
-	// WaitGroup to synchronize goroutines.
+	processedFileSizeChan := make(chan int64)
 	var wg sync.WaitGroup
-	var wg2 sync.WaitGroup
-
-	// [Goroutine] Worker goroutines to process file paths.
-	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			for data := range filepathWalkDataChan {
-				// Process the file.
-				path := data.Path
-				relativePath := data.RelativePath
-				modifiedTime := data.Info.ModTime()
-				size := data.Info.Size()
-				hash, err := calculateMD5(path)
-				if err != nil {
-					panic(fmt.Sprintf("Error calculating MD5 for file %s: %v", path, err))
-				}
-				fileInfo := FileInfo{
-					Path:         relativePath, // Use relative path for the manifest.
-					ModifiedTime: modifiedTime,
-					Size:         size,
-					Hash:         hash,
-				}
-				fileInfoChan <- fileInfo
-			}
-		}()
-	}
+	wg.Add(1)
+	// Start a goroutine to print progress.
+	go func() {
+		defer wg.Done()
+		totalSize := int64(0)
+		for size := range processedFileSizeChan {
+			totalSize += size
+			fmt.Printf("\r%80s", "") // Clear the line
+			fmt.Printf("\rProcessed file size: %s, Total: %s", toFriendlySize(totalSize), toFriendlySize(totalFileSize))
+		}
+		fmt.Println()
+	}()
 
 	fileInfoSlice := make([]FileInfo, 0)
 
-	wg2.Add(1)
-	// [Goroutine] This goroutine collects file info.
-	go func() {
-		defer wg2.Done()
-
-		for fileInfo := range fileInfoChan {
-			fileInfoSlice = append(fileInfoSlice, fileInfo)
-		}
-	}()
-
-	// Traverse the directory and send file paths to the channel.
-	err = filepath.Walk(directoryPath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.WalkDir(directoryPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			fmt.Printf("Error accessing path %q: %v\n", path, err)
+			// Log error but continue walking.
+			fmt.Printf("Warning: Error processing file %q: %v\n", path, err)
 			return nil
 		}
 
-		if info.IsDir() {
+		if d.IsDir() {
 			// Skip directories.
 			return nil
 		}
 
-		relativePath, err := filepath.Rel(directoryPath, path) // Make the path relative to the directory.
-		relativePath = filepath.ToSlash(relativePath)          // Convert to forward slashes for consistency.
+		// Get os.FileInfo from fs.DirEntry to access ModTime and Size.
+		info, err := d.Info()
 		if err != nil {
-			fmt.Printf("Error processing file %q: %v\n", path, err)
+			// Log error but continue walking if info can't be retrieved for a file.
+			fmt.Printf("Warning: Error getting file info for %q: %v\n", path, err)
 			return nil
 		}
 
-		fmt.Printf("Processing file: %s\n", path)
-		filepathWalkDataChan <- filepathWalkData{Path: path, RelativePath: relativePath, Info: info}
+		// Make the path relative to the directory and normalize slashes.
+		relativePath, err := filepath.Rel(directoryPath, path)
+		if err != nil {
+			// Log error but continue walking.
+			fmt.Printf("Error processing file %q: %v\n", path, err)
+			return nil
+		}
+		relativePath = filepath.ToSlash(relativePath)
+
+		// Process the file details.
+		modifiedTime := info.ModTime()
+		size := info.Size()
+		hash, err := calculateMD5(path)
+		if err != nil {
+			// Panic on MD5 calculation error as it's critical.
+			panic(fmt.Sprintf("Error calculating MD5 for file %s: %v", path, err))
+		}
+		fileID, err := getNTFSFileID(path)
+		if err != nil {
+			panic(fmt.Sprintf("Error getting NTFS file ID for file %s: %v", path, err))
+		}
+
+		// Create FileInfo and append to slice.
+		fileInfo := FileInfo{
+			Path:         relativePath,
+			ModifiedTime: modifiedTime,
+			Size:         size,
+			Hash:         hash,
+			NTFSFileID:   fileID,
+		}
+		fileInfoSlice = append(fileInfoSlice, fileInfo)
+		processedFileSizeChan <- size
 		return nil
 	})
 
-	// Notify the goroutines to stop and wait for them to finish.
-	close(filepathWalkDataChan)
+	close(processedFileSizeChan)
 	wg.Wait()
-	close(fileInfoChan)
-	wg2.Wait()
 
 	if err != nil {
 		fmt.Printf("Error traversing directory: %v\n", err)
-	} else {
-		fmt.Println("All files processed successfully.")
 	}
 
-	// Sort fileInfoSlice by Path field
+	// Sort fileInfoSlice by Path for consistent manifest generation.
 	sort.Slice(fileInfoSlice, func(i, j int) bool {
 		return fileInfoSlice[i].Path < fileInfoSlice[j].Path
 	})
 
-	err = writeManifest(file, fileInfoSlice)
+	// Write the collected file information to the manifest file.
+	err = writeManifest(file, fileInfoSlice) // Assume writeManifest is defined elsewhere.
 	if err != nil {
 		fmt.Printf("Error writing manifest file: %v\n", err)
 		return
