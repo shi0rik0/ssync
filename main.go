@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const ProgramVersion = "0.1.0-alpha5"
+
 func execute() {
 	var rootCmd = &cobra.Command{
 		Use:   "ssync",
@@ -40,10 +42,19 @@ func execute() {
 	}
 	compareCmd.Flags().BoolVarP(new(bool), "strict", "s", false, "Perform a strict comparison.")
 
+	var versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Display the version of ssync",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("ssync version %s\n", ProgramVersion)
+		},
+	}
+
 	// Add subcommands to the root command.
 	rootCmd.AddCommand(createCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(compareCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	// Execute the root command.
 	if err := rootCmd.Execute(); err != nil {
