@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"crypto/md5"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -25,33 +25,7 @@ type FileInfo struct {
 	NTFSFileID   uint64
 }
 
-// toCSVField converts a string into an RFC 4180 compliant CSV field.
-// It quotes the string only when necessary (i.e., if it contains a comma,
-// a double quote, or a newline character). Internal double quotes are escaped.
-func toCSVField(s string) string {
-	// Check if the string contains characters that require quoting based on RFC 4180:
-	// comma (,), double quote ("), or newline (\n or \r).
-	needsQuote := false
-	if strings.ContainsRune(s, ',') ||
-		strings.ContainsRune(s, '\n') ||
-		strings.ContainsRune(s, '\r') ||
-		strings.ContainsRune(s, '"') {
-		needsQuote = true
-	}
-
-	if needsQuote {
-		// If quoting is necessary, first escape any internal double quotes
-		// by replacing each " with "".
-		escapedS := strings.ReplaceAll(s, `"`, `""`)
-		// Then, wrap the entire escaped string in double quotes.
-		return `"` + escapedS + `"`
-	}
-
-	// If no special characters are found, the string does not need quoting.
-	// Return the original string as is.
-	return s
-}
-
+// readManifest reads a manifest CSV file and returns a slice of FileInfo.
 func readManifest(manifestPath string) ([]FileInfo, error) {
 	file, err := os.Open(manifestPath)
 	if err != nil {
@@ -59,76 +33,82 @@ func readManifest(manifestPath string) ([]FileInfo, error) {
 	}
 	defer file.Close()
 
+	r := csv.NewReader(file)
+	r.FieldsPerRecord = 5
+
 	var fileInfoSlice []FileInfo
-	scanner := bufio.NewScanner(file)
-	firstLine := true
-	for scanner.Scan() {
-		line := scanner.Text()
 
-		if line == "" || firstLine {
-			firstLine = false
-			continue
+	// Read and skip the header
+	header, err := r.Read()
+	if err != nil {
+		return nil, fmt.Errorf("error reading manifest header: %v", err)
+	}
+	if len(header) != 5 {
+		return nil, fmt.Errorf("invalid manifest header: %v", header)
+	}
+
+	for {
+		fields, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, fmt.Errorf("error reading manifest line: %v", err)
 		}
-
-		fields := strings.SplitN(line, ",", 5)
 		if len(fields) != 5 {
-			return nil, fmt.Errorf("invalid manifest line: %s", line)
+			return nil, fmt.Errorf("invalid manifest line (field count): %v", fields)
 		}
 
 		unixTime, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing modified time: %v", err)
+			return nil, fmt.Errorf("error parsing ModifiedTime in line %v: %v", fields, err)
 		}
-		modifiedTime := time.Unix(unixTime, 0)
-
 		size, err := strconv.ParseInt(fields[2], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing size: %v", err)
+			return nil, fmt.Errorf("error parsing Size in line %v: %v", fields, err)
 		}
-
 		fileID, err := strconv.ParseUint(fields[4], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing NTFS file ID: %v", err)
+			return nil, fmt.Errorf("error parsing NTFSFileID in line %v: %v", fields, err)
 		}
 
 		fileInfoSlice = append(fileInfoSlice, FileInfo{
 			Path:         fields[0],
-			ModifiedTime: modifiedTime,
+			ModifiedTime: time.Unix(unixTime, 0),
 			Size:         size,
 			Hash:         fields[3],
 			NTFSFileID:   fileID,
 		})
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading manifest file: %v", err)
-	}
-
 	return fileInfoSlice, nil
 }
 
+// writeManifest writes a slice of FileInfo to a CSV manifest file.
 func writeManifest(file *os.File, fileInfoSlice []FileInfo) error {
-	writer := bufio.NewWriter(file)
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
 	// Write the header line.
-	_, err := writer.WriteString("Path,ModifiedTime,Size,Hash,NtfsFileId\n")
-	if err != nil {
+	header := []string{"Path", "ModifiedTime", "Size", "Hash", "NtfsFileId"}
+	if err := writer.Write(header); err != nil {
 		return fmt.Errorf("error writing header to manifest file: %v", err)
 	}
 
 	for _, fileInfo := range fileInfoSlice {
-		line := fmt.Sprintf("%s,%s,%s,%s,%s\n",
-			toCSVField(fileInfo.Path),
-			toCSVField(fmt.Sprintf("%d", fileInfo.ModifiedTime.Unix())),
-			toCSVField(fmt.Sprintf("%d", fileInfo.Size)),
-			toCSVField(fileInfo.Hash),
-			toCSVField(fmt.Sprintf("%d", fileInfo.NTFSFileID)))
-		_, err = writer.WriteString(line)
-		if err != nil {
+		line := []string{
+			fileInfo.Path,
+			strconv.FormatInt(fileInfo.ModifiedTime.Unix(), 10),
+			strconv.FormatInt(fileInfo.Size, 10),
+			fileInfo.Hash,
+			strconv.FormatUint(fileInfo.NTFSFileID, 10),
+		}
+		if err := writer.Write(line); err != nil {
 			return fmt.Errorf("error writing line to manifest file: %v", err)
 		}
 	}
 
-	return writer.Flush()
+	return nil
 }
 
 func createFile(path string) (*os.File, error) {
