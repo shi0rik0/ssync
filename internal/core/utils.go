@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -86,9 +87,23 @@ func readManifest(manifestPath string) ([]FileInfo, error) {
 }
 
 // writeManifest writes a slice of FileInfo to a CSV manifest file.
-func writeManifest(file *os.File, fileInfoSlice []FileInfo) error {
+func writeManifest(file io.Writer, fileInfoSlice []FileInfo) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
+
+	// 验证是否有重复的 Path
+	pathSet := make(map[string]bool)
+	for _, fi := range fileInfoSlice {
+		if pathSet[fi.Path] {
+			return fmt.Errorf("duplicate path found in manifest: %s", fi.Path)
+		}
+		pathSet[fi.Path] = true
+	}
+
+	// 按照 Path 字段进行排序
+	sort.Slice(fileInfoSlice, func(i, j int) bool {
+		return fileInfoSlice[i].Path < fileInfoSlice[j].Path
+	})
 
 	// Write the header line.
 	header := []string{"Path", "ModifiedTime", "Size", "Hash", "NtfsFileId"}
@@ -262,6 +277,14 @@ func openSelectFolderDialog(title string) (string, error) {
 		return "", fmt.Errorf("failed to open folder selection dialog: %w", err)
 	}
 	return folderPath, nil
+}
+
+func openSelectFileDialog(title string, desc string, extensions ...string) (string, error) {
+	filePath, err := dialog.File().Title(title).Filter(desc, extensions...).Load()
+	if err != nil {
+		return "", fmt.Errorf("failed to open file selection dialog: %w", err)
+	}
+	return filePath, nil
 }
 
 func openSaveFileDialog(title string, defaultName string, desc string, extensions ...string) (string, error) {
