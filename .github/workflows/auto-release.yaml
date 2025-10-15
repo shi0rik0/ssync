@@ -23,7 +23,7 @@ jobs:
           go-version: "1.24" # Specify Go version
 
       - name: Set current date environment variable
-        run: echo "TODAY_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+        run: echo "TODAY_DATE=$(TZ='Asia/Shanghai' date +%Y%m%d)" >> $GITHUB_ENV
 
       - name: Calculate next sequential release number
         uses: actions/github-script@v7
@@ -59,6 +59,31 @@ jobs:
             console.log(`Calculated next release tag: ${newTagName}`);
 
             core.exportVariable('RELEASE_TAG', newTagName);
+
+      - name: Verify RELEASE_TAG matches Go ProgramVersion
+        run: |
+          # 1. 定义版本文件路径
+          VERSION_FILE="./internal/core/version.go"
+
+          # 2. 使用 grep 和 awk 提取 ProgramVersion 的值
+          # -F'"' 将双引号设置为分隔符
+          # '{print $2}' 打印第二个字段，即引号内的版本字符串
+          GO_VERSION=$(grep 'const ProgramVersion' $VERSION_FILE | awk -F'"' '{print $2}')
+
+          # 3. 获取环境变量中的 RELEASE_TAG
+          RELEASE_TAG="${{ env.RELEASE_TAG }}"
+
+          echo "Go File Version: $GO_VERSION"
+          echo "Calculated Tag: $RELEASE_TAG"
+
+          # 4. 比较两个版本号
+          if [ "$GO_VERSION" != "$RELEASE_TAG" ]; then
+            echo "::error title=Version Mismatch::Error: The version in $VERSION_FILE ($GO_VERSION) does not match the calculated release tag ($RELEASE_TAG)."
+            # 使用 exit 1 终止当前步骤，从而终止整个 Action
+            exit 1
+          else
+            echo "Verification successful. Version numbers match."
+          fi
 
       - name: Generate release assets
         run: |
