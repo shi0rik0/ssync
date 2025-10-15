@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -61,7 +61,7 @@ func fileInfoSliceToMap(fileInfoSlice []FileInfo) map[string]FileInfo {
 	return fileInfoMap
 }
 
-func runCompare(cmd *cobra.Command, args []string) {
+func Compare(cmd *cobra.Command, args []string) {
 	dir1 := args[0]
 	dir2 := args[1]
 	strictFlag, err := cmd.Flags().GetBool("strict")

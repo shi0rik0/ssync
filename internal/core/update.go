@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -10,8 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runUpdate updates an existing manifest file by traversing a directory.
-func runUpdate(cmd *cobra.Command, args []string) {
+func Update(cmd *cobra.Command, args []string) {
 	// Extract arguments.
 	directoryPath := args[0]
 	oldManifestPath := args[1]

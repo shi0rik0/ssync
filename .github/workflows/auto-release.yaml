@@ -1,7 +1,5 @@
-# Workflow name
 name: Build and release
 
-# Trigger the workflow on pushes to the main branch
 on:
   push:
     branches:
@@ -24,30 +22,51 @@ jobs:
         with:
           go-version: "1.24" # Specify Go version
 
-      - name: Extract Version and Build Go Windows Executable
+      - name: Set current date environment variable
+        run: echo "TODAY_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Calculate next sequential release number
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = process.env.TODAY_DATE;
+            const prefix = `${today}.`;
+            let maxSuffix = 0;
+
+            // 获取已有的 Releases
+            // 注意：假设不会超过 100 个 Release
+            const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100
+            });
+
+            // 遍历 Releases，找到今天最大的序号
+            for (const release of releases) {
+                if (release.tag_name && release.tag_name.startsWith(prefix)) {
+                    const suffixStr = release.tag_name.substring(prefix.length);
+                    const suffixNum = parseInt(suffixStr, 10);
+                    
+                    if (!isNaN(suffixNum)) {
+                        maxSuffix = Math.max(maxSuffix, suffixNum);
+                    }
+                }
+            }
+
+            const nextSuffix = maxSuffix + 1;
+            const newTagName = `${today}.${nextSuffix}`;
+
+            console.log(`Calculated next release tag: ${newTagName}`);
+
+            core.exportVariable('RELEASE_TAG', newTagName);
+
+      - name: Generate release assets
         run: |
-          # Get the latest commit message
-          COMMIT_MESSAGE=$(git log -1 --pretty=%B)
-          echo "Latest commit message: $COMMIT_MESSAGE"
-
-          # Try to extract a version string (e.g., v1.2.3, v1.0.0-beta)
-          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP 'v\d+\.\d+\.\d+(-[a-zA-Z0-9\.]+)?' | head -n 1)
-
-          # If no version found, terminate the workflow
-          if [ -z "$VERSION" ]; then
-            echo "::error::No explicit version (e.g., vX.Y.Z) found in the latest commit message. Workflow will terminate."
-            exit 1 # Terminate workflow with non-zero status
-          fi
-
-          echo "Detected version for release: $VERSION"
-          # Set extracted version as environment variable for subsequent steps
-          echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
-
           # Define the base application name
           APP_BASE_NAME="ssync" # Change this to your desired base name
 
           # Construct the executable name (e.g., my_go_app_v1.0.0.exe)
-          EXECUTABLE_NAME="${APP_BASE_NAME}_${VERSION}.exe"
+          EXECUTABLE_NAME="${APP_BASE_NAME}_${RELEASE_TAG}.exe"
 
           # Set environment variables for Windows cross-compilation
           export GOOS=windows
@@ -55,24 +74,15 @@ jobs:
 
           # Build the executable
           # Adjust path if main package is not in the root, e.g., 'go build -o "${EXECUTABLE_NAME}" ./cmd/your_app'
-          go build -o "${EXECUTABLE_NAME}" .
+          go build -o "${EXECUTABLE_NAME}" ./cmd/ssync
 
           # Store executable name as environment variable for subsequent steps
           echo "EXECUTABLE_NAME=$EXECUTABLE_NAME" >> $GITHUB_ENV
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        # Release only for main branch pushes
-        if: startsWith(github.ref, 'refs/heads/main')
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
-          # Use the extracted version as the release tag. Creates a Git tag if it doesn't exist.
-          tag_name: ${{ env.RELEASE_VERSION }}
-          # Use the extracted version as the release name
-          name: Release ${{ env.RELEASE_VERSION }}
-          # Automatically generate release notes from commits since the last tag
-          generate_release_notes: true
+          name: Release ${{ env.RELEASE_TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             ${{ env.EXECUTABLE_NAME }}
-        env:
-          # GITHUB_TOKEN is automatically provided by GitHub Actions for authentication
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

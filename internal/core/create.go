@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runCreate(cmd *cobra.Command, args []string) {
+func Create(cmd *cobra.Command, args []string) {
 	// Extract arguments.
 	directoryPath := args[0]
 	manifestPath := args[1]
@@ -135,7 +135,7 @@ func runCreate(cmd *cobra.Command, args []string) {
 	})
 
 	// Write the collected file information to the manifest file.
-	err = writeManifest(file, fileInfoSlice) // Assume writeManifest is defined elsewhere.
+	err = writeManifest(file, fileInfoSlice)
 	if err != nil {
 		fmt.Printf("Error writing manifest file: %v\n", err)
 		return
