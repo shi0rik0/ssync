@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sqweek/dialog"
 	"golang.org/x/sys/windows"
 )
 
@@ -252,4 +253,21 @@ func isNTFS(dirPath string) (bool, error) {
 
 	// Compare the obtained file system name with "NTFS".
 	return fileSystemName == "NTFS", nil
+}
+
+// 打开 Windows 的目录选择对话框, 返回用户选择的目录路径.
+func openSelectFolderDialog(title string) (string, error) {
+	folderPath, err := dialog.Directory().Title(title).Browse()
+	if err != nil {
+		return "", fmt.Errorf("failed to open folder selection dialog: %w", err)
+	}
+	return folderPath, nil
+}
+
+func openSaveFileDialog(title string, defaultName string, desc string, extensions ...string) (string, error) {
+	filePath, err := dialog.File().Title(title).Filter(desc, extensions...).SetStartFile(defaultName).Save()
+	if err != nil {
+		return "", fmt.Errorf("failed to open save file dialog: %w", err)
+	}
+	return filePath, nil
 }

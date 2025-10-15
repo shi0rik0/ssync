@@ -6,17 +6,42 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 func Create(cmd *cobra.Command, args []string) {
-	// Extract arguments.
 	directoryPath := args[0]
 	manifestPath := args[1]
 
 	logrus.Debugf("Executing 'create' command with directory: '%s', manifest: '%s'", directoryPath, manifestPath)
+
+	if directoryPath == "?" {
+		directoryPath2, err := openSelectFolderDialog("Select Folder to Scan")
+		if err != nil {
+			fmt.Printf("Error selecting folder: %v\n", err)
+			return
+		}
+		directoryPath = directoryPath2
+		logrus.Debugf("Selected directory: %s", directoryPath)
+	}
+
+	if manifestPath == "?" {
+		manifestPath2, err := openSaveFileDialog("Select Manifest File", "ssync-manifest.csv", "CSV files", "csv")
+		if err != nil {
+			fmt.Printf("Error selecting manifest file: %v\n", err)
+			return
+		}
+		manifestPath = manifestPath2
+		logrus.Debugf("Selected manifest file: %s", manifestPath)
+	}
+
+	create(directoryPath, manifestPath)
+}
+
+func create(directoryPath string, manifestPath string) {
 
 	isNTFS, err := isNTFS(directoryPath)
 	if err != nil {
@@ -57,10 +82,17 @@ func Create(cmd *cobra.Command, args []string) {
 	go func() {
 		defer wg.Done()
 		totalSize := int64(0)
+		timestamp := time.Now()
 		for size := range processedFileSizeChan {
 			totalSize += size
-			fmt.Printf("\r%80s", "") // Clear the line
-			fmt.Printf("\rProcessed file size: %s, Total: %s", toFriendlySize(totalSize), toFriendlySize(totalFileSize))
+			if time.Since(timestamp) < 500*time.Millisecond {
+				continue
+			}
+			timestamp = time.Now()
+			fmt.Printf("\rProcessed file size: %s, Total: %s%s",
+				toFriendlySize(totalSize),
+				toFriendlySize(totalFileSize),
+				"\033[K")
 		}
 		fmt.Println()
 	}()
