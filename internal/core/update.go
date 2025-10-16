@@ -4,18 +4,52 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"sort"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 func Update(cmd *cobra.Command, args []string) {
-	// Extract arguments.
 	directoryPath := args[0]
 	oldManifestPath := args[1]
 	newManifestPath := args[2]
 	logrus.Debugf("Executing 'update' command with directory: '%s', old manifest: '%s', new manifest: '%s'", directoryPath, oldManifestPath, newManifestPath)
+
+	if directoryPath == "?" {
+		directoryPath2, err := openSelectFolderDialog("Select Folder to Scan")
+		if err != nil {
+			fmt.Printf("Error selecting folder: %v\n", err)
+			return
+		}
+		directoryPath = directoryPath2
+		logrus.Debugf("Selected directory: %s", directoryPath)
+	}
+
+	if oldManifestPath == "?" {
+		oldManifestPath2, err := openSelectFileDialog("Select Old Manifest File", "CSV files", "csv")
+		if err != nil {
+			fmt.Printf("Error selecting old manifest file: %v\n", err)
+			return
+		}
+		oldManifestPath = oldManifestPath2
+		logrus.Debugf("Selected old manifest file: %s", oldManifestPath)
+	}
+
+	if newManifestPath == "?" {
+		newManifestPath2, err := openSaveFileDialog("Select New Manifest File", "ssync-manifest.csv", "CSV files", "csv")
+		if err != nil {
+			fmt.Printf("Error selecting new manifest file: %v\n", err)
+			return
+		}
+		newManifestPath = newManifestPath2
+		logrus.Debugf("Selected new manifest file: %s", newManifestPath)
+	}
+
+	update(directoryPath, oldManifestPath, newManifestPath)
+}
+
+func update(directoryPath string, oldManifestPath string, newManifestPath string) {
 
 	isNTFS, err := isNTFS(directoryPath)
 	if err != nil {
@@ -49,6 +83,15 @@ func Update(cmd *cobra.Command, args []string) {
 	}
 
 	newManifestSlice := make([]FileInfo, 0)
+
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	// 这个 goroutine 永远不会退出, 不过影响不大.
+	go func() {
+		fmt.Printf("Updating manifest... Please wait.")
+		for range ticker.C {
+			fmt.Printf(".")
+		}
+	}()
 
 	err = filepath.WalkDir(directoryPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -128,15 +171,12 @@ func Update(cmd *cobra.Command, args []string) {
 		return // Exit if directory traversal failed.
 	}
 
-	fmt.Println("All files processed successfully.")
+	ticker.Stop()
 
-	// Sort the new manifest slice by Path for consistent manifest generation.
-	sort.Slice(newManifestSlice, func(i, j int) bool {
-		return newManifestSlice[i].Path < newManifestSlice[j].Path
-	})
+	fmt.Println("\nAll files processed successfully.")
 
 	// Write the collected file information to the new manifest file.
-	err = writeManifest(file, newManifestSlice) // Assumes writeManifest is defined elsewhere.
+	err = writeManifest(file, newManifestSlice)
 	if err != nil {
 		fmt.Printf("Error writing new manifest file: %v\n", err)
 		return
