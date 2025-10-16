@@ -17,5 +17,6 @@ func init() {
 	rootCmd.AddCommand(createCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(compareCmd)
+	rootCmd.AddCommand(md5Cmd)
 	rootCmd.AddCommand(versionCmd)
 }
