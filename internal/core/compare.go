@@ -71,9 +71,32 @@ func Compare(cmd *cobra.Command, args []string) {
 	}
 	logrus.Debugf("Executing 'compare' command with arguments: dir1='%s', dir2='%s', strict=%t", dir1, dir2, strictFlag)
 
+	if dir1 == "?" {
+		newDir1, err := openSelectFolderDialog("Select First Directory")
+		if err != nil {
+			logrus.Errorf("Error selecting first directory: %v", err)
+			return
+		}
+		dir1 = newDir1
+	}
+
+	if dir2 == "?" {
+		newDir2, err := openSelectFolderDialog("Select Second Directory")
+		if err != nil {
+			logrus.Errorf("Error selecting second directory: %v", err)
+			return
+		}
+		dir2 = newDir2
+	}
+
 	if !strictFlag {
 		fmt.Printf("Warning: Strict comparison is disabled.\n")
 	}
+
+	compare(dir1, dir2, strictFlag)
+}
+
+func compare(directory1 string, directory2 string, strict bool) {
 
 	var fileInfoSlice1, fileInfoSlice2 []FileInfo
 	var err1, err2 error
@@ -83,22 +106,22 @@ func Compare(cmd *cobra.Command, args []string) {
 
 	go func() {
 		defer wg.Done()
-		fileInfoSlice1, err1 = walkDir(dir1, strictFlag)
+		fileInfoSlice1, err1 = walkDir(directory1, strict)
 	}()
 
 	go func() {
 		defer wg.Done()
-		fileInfoSlice2, err2 = walkDir(dir2, strictFlag)
+		fileInfoSlice2, err2 = walkDir(directory2, strict)
 	}()
 
 	wg.Wait()
 
 	if err1 != nil {
-		fmt.Printf("Error walking directory %s: %v\n", dir1, err1)
+		fmt.Printf("Error walking directory %s: %v\n", directory1, err1)
 		return
 	}
 	if err2 != nil {
-		fmt.Printf("Error walking directory %s: %v\n", dir2, err2)
+		fmt.Printf("Error walking directory %s: %v\n", directory2, err2)
 		return
 	}
 
@@ -120,7 +143,7 @@ func Compare(cmd *cobra.Command, args []string) {
 
 		mtimeEqual := fi1.ModifiedTime.Unix() == fi2.ModifiedTime.Unix()
 		sizeEqual := fi1.Size == fi2.Size
-		hashEqual := !strictFlag || fi1.Hash == fi2.Hash
+		hashEqual := !strict || fi1.Hash == fi2.Hash
 		if !mtimeEqual || !sizeEqual || !hashEqual {
 			reason := ""
 			if !mtimeEqual {
@@ -153,5 +176,5 @@ func Compare(cmd *cobra.Command, args []string) {
 		fmt.Println(out.Msg)
 	}
 
-	fmt.Printf("Comparison completed between %s and %s\n", dir1, dir2)
+	fmt.Printf("Comparison completed between %s and %s\n", directory1, directory2)
 }
